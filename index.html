@@ -61,6 +61,8 @@ h4{margin:16px 0 4px;font-size:12px;letter-spacing:.08em;color:var(--mut);text-t
       <button id="reset">↺ Reset</button>
       <button id="exp" class="pri">⬇ Simpan JPG</button>
       <button id="expPng">⬇ Simpan PNG</button>
+      <button id="login" class="pri">🔐 Login Google</button>
+<span id="who" style="font-size:12px;color:var(--mut)"></span>
       <select id="pq" title="Kualitas preview di layar (hasil ekspor selalu ukuran asli)">
         <option value="1000">Preview: Cepat</option>
         <option value="1500" selected>Preview: Sedang</option>
@@ -80,7 +82,7 @@ h4{margin:16px 0 4px;font-size:12px;letter-spacing:.08em;color:var(--mut);text-t
   </div>
 </div>
 <div id="busy" hidden><div id="busyTxt">Memproses...</div></div>
-
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 /* ============ DATA & STATE ============ */
 const COLORS=[['Merah',0,'#e53935'],['Oranye',30,'#fb8c00'],['Kuning',60,'#fdd835'],['Hijau',120,'#43a047'],['Aqua',180,'#00acc1'],['Biru',240,'#1e88e5'],['Ungu',280,'#8e24aa'],['Magenta',320,'#d81b60']];
@@ -119,7 +121,46 @@ let curTab='light',selC=0,curCh='m',selPt=-1,img=null,blobCur=null,curId=null,ur
 const $=s=>document.querySelector(s);
 const cv=$('#cv'),ctx=cv.getContext('2d',{willReadFrequently:true});
 const fmt=v=>(Math.abs(v)<10&&v%1!==0)?v.toFixed(2):Math.round(v);
+  
+/* ============ SUPABASE & LOGIN ============ */
+const SB_URL='https://gvagrunkqfkkrcizvqni.supabase.co';
+const SB_KEY='sb_publishable_ezCACptDAmztUUZXv_bWJg_U5g4MJGP';
+let sb=null,user=null;
+try{ if(window.supabase) sb=supabase.createClient(SB_URL,SB_KEY); }catch(e){ console.warn(e); }
 
+function updateLoginUI(){
+  $('#login').textContent=user?'🚪 Keluar':'🔐 Login Google';
+  $('#who').textContent=user?(user.user_metadata?.full_name||user.email):'';
+}
+$('#login').onclick=async()=>{
+  if(!sb) return alert('Supabase belum termuat. Periksa koneksi internet.');
+  if(user){ await sb.auth.signOut(); }
+  else{ await sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:location.origin+location.pathname}}); }
+};
+if(sb){
+  sb.auth.onAuthStateChange((_ev,session)=>{
+    user=session?.user||null; updateLoginUI();
+    if(curTab==='presets'||curTab==='gallery') showTab(curTab);
+  });
+  sb.auth.getSession().then(({data})=>{user=data.session?.user||null;updateLoginUI()});
+}
+async function cloudList(){
+  if(!sb||!user) return [];
+  const {data,error}=await sb.from('presets').select('id,name,data').order('created_at',{ascending:false});
+  if(error){alert(error.message);return []}
+  return data;
+}
+async function cloudSave(name){
+  if(!sb||!user) return alert('Login dulu untuk menyimpan ke cloud.');
+  const {error}=await sb.from('presets').insert({name,data:P});
+  if(error) alert(error.message);
+}
+async function cloudDelete(id){
+  if(!sb||!user) return;
+  const {error}=await sb.from('presets').delete().eq('id',id);
+  if(error) alert(error.message);
+}
+  
 /* ============ DATABASE (IndexedDB) ============ */
 let db=null;
 function openDB(){return new Promise((res,rej)=>{if(!window.indexedDB)return rej(new Error('IndexedDB tidak didukung'));
