@@ -210,7 +210,122 @@ async function cloudDelete(id){
   const {error}=await sb.from('presets').delete().eq('id',id);
   if(error) alert(error.message);
 }
-  
+
+/* ============ PROYEK CLOUD (foto + pengaturan per akun) ============ */
+let curCloudId=null;
+const BUCKET='photos';
+$('#file').addEventListener('change',()=>{curCloudId=null});
+
+const canvasBlob=(c,type,q)=>new Promise(r=>c.toBlob(r,type,q));
+async function makeThumb(){
+  const s=Math.min(1,320/Math.max(cv.width,cv.height));
+  const c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(cv.width*s));c.height=Math.max(1,Math.round(cv.height*s));
+  c.getContext('2d').drawImage(cv,0,0,c.width,c.height);
+  return canvasBlob(c,'image/jpeg',.8);
+}
+
+async function cloudProjectSave(name){
+  if(!sb||!user) return alert('Login dulu untuk menyimpan ke akun.');
+  if(!blobCur||!img) return alert('Buka foto dulu.');
+  busy('Mengunggah proyek ke akun...');
+  try{
+    const id=crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(36).slice(2);
+    const ext=((blobCur.type||'image/jpeg').split('/')[1]||'jpg').replace('jpeg','jpg').replace(/[^a-z0-9]/gi,'');
+    const photo_path=`${user.id}/${id}.${ext}`,thumb_path=`${user.id}/${id}_t.jpg`;
+    let r=await sb.storage.from(BUCKET).upload(photo_path,blobCur,{contentType:blobCur.type||'image/jpeg'});
+    if(r.error) throw r.error;
+    const tb=await makeThumb();
+    r=await sb.storage.from(BUCKET).upload(thumb_path,tb,{contentType:'image/jpeg'});
+    if(r.error) throw r.error;
+    const ins=await sb.from('projects').insert({name,data:P,photo_path,thumb_path}).select('id').single();
+    if(ins.error) throw ins.error;
+    curCloudId=ins.data.id;
+  }catch(e){alert('Gagal menyimpan: '+(e.message||e))}
+  finally{busy(null)}
+}
+
+async function cloudProjectUpdate(){
+  if(!sb||!user||!curCloudId) return;
+  const {error}=await sb.from('projects').update({data:P,updated_at:new Date().toISOString()}).eq('id',curCloudId);
+  if(error) alert('Gagal memperbarui: '+error.message);
+}
+
+async function cloudProjectOpen(row){
+  busy('Membuka proyek...');
+  try{
+    const {data,error}=await sb.storage.from(BUCKET).download(row.photo_path);
+    if(error) throw error;
+    P=mk(row.data);selPt=-1;curId=null;
+    await loadBlob(data);
+    curCloudId=row.id;
+    showTab(curTab);
+  }catch(e){alert('Gagal membuka: '+(e.message||e))}
+  finally{busy(null)}
+}
+
+async function cloudProjectDelete(row){
+  if(!confirm('Hapus proyek "'+row.name+'" dari akun?')) return;
+  await sb.storage.from(BUCKET).remove([row.photo_path,row.thumb_path].filter(Boolean));
+  const {error}=await sb.from('projects').delete().eq('id',row.id);
+  if(error) return alert('Gagal menghapus: '+error.message);
+  if(curCloudId===row.id) curCloudId=null;
+}
+
+async function renderCloudProjects(box){
+  box.innerHTML='';
+  box.appendChild(el('h4','','☁ Proyek di Akun'));
+  if(!sb){box.appendChild(el('p','note','Supabase belum termuat.'));return}
+  if(!user){box.appendChild(el('p','note','Login Google untuk menyimpan proyek ke akun dan membukanya dari perangkat mana pun.'));return}
+
+  const nameIn=el('input');nameIn.type='text';nameIn.placeholder='Nama proyek';
+  nameIn.value='Proyek '+new Date().toLocaleDateString('id-ID');
+  box.appendChild(nameIn);
+  const act=el('div','wrap');
+  const bSave=el('button','pri sm','☁ Simpan sebagai baru');
+  bSave.onclick=async()=>{await cloudProjectSave(nameIn.value.trim()||'Tanpa nama');renderCloudProjects(box)};
+  act.appendChild(bSave);
+  if(curCloudId){
+    const bUp=el('button','alt sm','💾 Perbarui proyek ini');
+    bUp.onclick=async()=>{await cloudProjectUpdate();renderCloudProjects(box)};
+    act.appendChild(bUp);
+  }
+  box.appendChild(act);
+
+  const list=el('div');box.appendChild(list);
+  list.appendChild(el('p','note','Memuat daftar...'));
+  const {data:rows,error}=await sb.from('projects')
+    .select('id,name,data,photo_path,thumb_path,updated_at').order('updated_at',{ascending:false});
+  list.innerHTML='';
+  if(error){list.appendChild(el('p','note','Gagal memuat: '+error.message));return}
+  if(!rows.length){list.appendChild(el('p','note','Belum ada proyek di akun ini.'));return}
+
+  const paths=rows.map(r=>r.thumb_path).filter(Boolean);
+  const urls={};
+  if(paths.length){
+    const {data:sg}=await sb.storage.from(BUCKET).createSignedUrls(paths,3600);
+    (sg||[]).forEach(s=>{if(s.signedUrl)urls[s.path]=s.signedUrl});
+  }
+  rows.forEach(row=>{
+    const it=el('div','item');
+    const im=el('img');if(urls[row.thumb_path])im.src=urls[row.thumb_path];
+    const nm=el('div','nm');
+    nm.textContent=row.name+(row.id===curCloudId?'  ✓':'');
+    const dt=el('div','note');dt.textContent=new Date(row.updated_at).toLocaleString('id-ID');
+    nm.appendChild(dt);
+    const bo=el('button','pri sm','Buka');bo.onclick=()=>cloudProjectOpen(row);
+    const bd=el('button','sm','🗑');bd.onclick=async()=>{await cloudProjectDelete(row);renderCloudProjects(box)};
+    it.append(im,nm,bo,bd);list.appendChild(it);
+  });
+}
+
+/* tambahkan bagian proyek cloud di bawah tab Galeri */
+const _showTab=showTab;
+showTab=function(k){
+  _showTab(k);
+  if(k==='gallery'){const box=el('div');$('#panel').appendChild(box);renderCloudProjects(box)}
+};
+
 /* ============ DATABASE (IndexedDB) ============ */
 let db=null;
 function openDB(){return new Promise((res,rej)=>{if(!window.indexedDB)return rej(new Error('IndexedDB tidak didukung'));
